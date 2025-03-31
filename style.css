@@ -1,0 +1,77 @@
+body {
+    display: flex;
+    flex-direction: column; /* Apila los elementos verticalmente */
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh; /* Mínimo alto de la ventana */
+    background-color: #333;
+    color: #fff;
+    font-family: sans-serif;
+    margin: 0;
+    overflow: hidden; /* Evita barras de scroll si el canvas es grande */
+}
+
+h1 {
+    margin-bottom: 10px;
+}
+
+#game-container {
+    position: relative; /* Necesario para posicionar elementos internos */
+    border: 2px solid #fff;
+}
+
+#gameCanvas {
+    display: block; /* Evita espacio extra debajo del canvas */
+    background-color: #5a5a5a; /* Color de fondo del área de juego */
+}
+
+#ui {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    color: white;
+    font-size: 1.5em;
+    text-shadow: 1px 1px 2px black;
+}
+
+#game-over {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background-color: rgba(0, 0, 0, 0.8);
+    color: white;
+    padding: 30px;
+    border-radius: 10px;
+    text-align: center;
+    border: 2px solid red;
+}
+
+#paused {
+    border-color: yellow; /* Borde amarillo para pausa */
+}
+
+#paused h2 {
+    color: yellow;
+    margin-bottom: 15px;
+}
+
+#game-over h2 {
+    color: red;
+    margin-bottom: 15px;
+}
+
+#game-over button {
+    padding: 10px 20px;
+    font-size: 1em;
+    cursor: pointer;
+    margin-top: 15px;
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    border-radius: 5px;
+}
+
+#game-over button:hover {
+    background-color: #45a049;
+}
