@@ -7,6 +7,8 @@ const finalScoreElement = document.getElementById('final-score');
 const restartButton = document.getElementById('restart-button');
 const pausedElement = document.getElementById('paused');
 const gameContainer = document.getElementById('game-container');
+const personalBestElement = document.getElementById('personal-best');
+
 
 // --- Configuración del Juego ---
 let canvasWidth = 800;
@@ -22,6 +24,9 @@ let zombieSpawnInterval = 1500;
 let lastZombieSpawnTime = 0;
 let keysPressed = {};
 let animationId;
+
+//PB
+const LOCAL_STORAGE_PB_KEY = 'zombieShooterPersonalBest';
 
 // --- Audio ---
 let audioContext; // <<<--- DECLARACIÓN GLOBAL IMPORTANTE
@@ -190,6 +195,41 @@ function checkBulletFenceCollision(bullet) {
         }
     }
     return false; // Sin colisión con vallas
+}
+
+//PB
+// --- Función para cargar y mostrar el PB al inicio ---
+function loadAndDisplayPersonalBest() {
+    const savedPB = localStorage.getItem(LOCAL_STORAGE_PB_KEY);
+    // Si hay un PB guardado, lo mostramos. Si no, mostramos 0.
+    // Usamos parseInt y || 0 para manejar el caso de que no haya nada guardado (null)
+    const currentPB = parseInt(savedPB, 10) || 0;
+    personalBestElement.textContent = currentPB;
+    console.log('PB cargado:', currentPB);
+    return currentPB; // Devolvemos el valor por si lo necesitas
+}
+
+// --- Función para comprobar y guardar un nuevo PB ---
+function checkAndSavePersonalBest(currentScore) {
+    const savedPB = localStorage.getItem(LOCAL_STORAGE_PB_KEY);
+    const currentBestScore = parseInt(savedPB, 10) || 0; // Obtiene el PB actual o 0
+
+    if (currentScore > currentBestScore) {
+        console.log(`¡Nuevo PB! ${currentScore} > ${currentBestScore}. Guardando...`);
+        localStorage.setItem(LOCAL_STORAGE_PB_KEY, currentScore);
+        // Actualizamos la pantalla inmediatamente
+        personalBestElement.textContent = currentScore;
+        // Opcional: Actualizar PB en la pantalla de game over si lo añadiste
+        // const pbGameoverElement = document.getElementById('pb-gameover');
+        // if (pbGameoverElement) pbGameoverElement.textContent = currentScore;
+        return true; // Indicamos que se guardó un nuevo PB
+    } else {
+        console.log(`Puntuación (${currentScore}) no superó el PB (${currentBestScore}).`);
+        // Opcional: Asegurarse de que el PB en game over muestra el correcto
+        // const pbGameoverElement = document.getElementById('pb-gameover');
+        // if (pbGameoverElement) pbGameoverElement.textContent = currentBestScore;
+        return false; // No se guardó nuevo PB
+    }
 }
 
 // --- Clases del Juego ---
@@ -430,6 +470,10 @@ function init() {
     scoreElement.textContent = score;
     gameOverElement.style.display = 'none';
     pausedElement.style.display = 'none';
+
+    // Carga y muestra el PB existente al iniciar CADA juego (o una vez al cargar página)
+    loadAndDisplayPersonalBest();
+
     keysPressed = {};
     if (animationId) cancelAnimationFrame(animationId);
     animationId = null; // Resetear
@@ -510,9 +554,11 @@ function handleCollisions() {
 
 function gameOver() {
     if (!gameRunning) return;
-    console.log("Ejecutando gameOver...");
+    console.log("Game Over - Puntuación Final:", score);
     gameRunning = false;
     finalScoreElement.textContent = score;
+    // 2. Comprueba y guarda el PB *ANTES* de mostrar la pantalla
+    checkAndSavePersonalBest(score);
     gameOverElement.style.display = 'flex';
     zombies.forEach(zombie => zombie.stopSound());
     if (animationId) cancelAnimationFrame(animationId);
