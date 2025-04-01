@@ -25,6 +25,17 @@ let lastZombieSpawnTime = 0;
 let keysPressed = {};
 let animationId;
 
+// --- Missile Powerup ---
+let missileItem = {
+    x: 0,
+    y: 0,
+    radius: 12,
+    color: 'orange',
+    active: false, // Is it currently on the map?
+    spawnInterval: 60000, // 1 minute in milliseconds
+    lastSpawnTime: 0
+};
+
 //PB
 const LOCAL_STORAGE_PB_KEY = 'zombieShooterPersonalBest';
 
@@ -32,6 +43,8 @@ const LOCAL_STORAGE_PB_KEY = 'zombieShooterPersonalBest';
 let audioContext; // <<<--- DECLARACIÓN GLOBAL IMPORTANTE
 let shootBuffer = null;
 let zombieBuffer = null;
+let deathSoundBuffer = null; // <<<--- NUEVO: Buffer para sonido de muerte
+let missilePickupSoundBuffer = null; // <<<--- NUEVO: Buffer para sonido de recoger misil
 const MAX_ZOMBIE_VOLUME = 0.3;
 const MAX_HEARING_DISTANCE = 400;
 const MIN_DISTANCE_FOR_MAX_VOL = 50;
@@ -68,34 +81,48 @@ async function loadSound(url) {
         return audioBuffer;
     } catch (error) {
         console.error(`Error cargando o decodificando el sonido: ${url}`, error);
-        alert(`Error al cargar el sonido ${url}. Verifica que el archivo existe y no está corrupto.`);
+        // No mostrar alert aquí para no interrumpir por cada sonido, solo loguear
+        console.warn(`No se pudo cargar el sonido ${url}. Revisa la ruta y el archivo.`);
         return null;
     }
 }
 
 async function loadSounds() {
     try {
-        [shootBuffer, zombieBuffer] = await Promise.all([
+        // Carga todos los sonidos en paralelo
+        [shootBuffer, zombieBuffer, deathSoundBuffer, missilePickupSoundBuffer] = await Promise.all([
             loadSound('shoot.mp3'),
-            loadSound('zombie.mp3')
+            loadSound('zombie.mp3'),
+            loadSound('jijjea.mp3'),      // <<<--- NUEVO: Cargar sonido de muerte
+            loadSound('byebye.mp3')       // <<<--- NUEVO: Cargar sonido de recoger misil
         ]);
         console.log("Proceso de carga de sonidos finalizado.");
         if (!shootBuffer) console.warn("Buffer de disparo NO cargado.");
         if (!zombieBuffer) console.warn("Buffer de zombie NO cargado.");
+        if (!deathSoundBuffer) console.warn("Buffer de muerte (jijjea.mp3) NO cargado.");
+        if (!missilePickupSoundBuffer) console.warn("Buffer de recoger misil (byebye.mp3) NO cargado.");
     } catch (error) {
         console.error("Error durante la carga paralela de sonidos:", error);
     }
 }
 
+
 function playSound(buffer, volume = 1.0, loop = false) {
-    if (!audioContext || !buffer) return null;
+    if (!audioContext || !buffer) {
+        // console.warn("Intento de reproducir sonido fallido: AudioContext no listo o buffer nulo.");
+        return null;
+    }
     if (audioContext.state === 'suspended') {
         audioContext.resume().then(() => {
+            // console.log("AudioContext reanudado por playSound.");
             playSoundInternal(buffer, volume, loop);
         }).catch(e => console.error("Error al reanudar AudioContext:", e));
-        return null;
-    } else {
+        return null; // Aún no se puede reproducir inmediatamente
+    } else if (audioContext.state === 'running') {
         return playSoundInternal(buffer, volume, loop);
+    } else {
+        // console.warn(`AudioContext en estado inesperado: ${audioContext.state}`);
+        return null;
     }
 }
 
@@ -105,39 +132,45 @@ function playSoundInternal(buffer, volume, loop) {
         const gainNode = audioContext.createGain();
         source.buffer = buffer;
         source.loop = loop;
-        gainNode.gain.setValueAtTime(volume, audioContext.currentTime);
+        // Usar linearRamp para evitar clicks, con fallback a setValueAtTime
+        try {
+             gainNode.gain.setValueAtTime(volume, audioContext.currentTime); // Valor inicial inmediato
+        } catch(e){ console.warn("Error con setValueAtTime:", e)}
+
         source.connect(gainNode);
         gainNode.connect(audioContext.destination);
         source.start(0);
+        // console.log("Sonido reproducido."); // Log opcional
         return { source, gainNode };
     } catch (e) {
-        console.error("Error al reproducir sonido:", e);
+        console.error("Error al reproducir sonido internamente:", e);
         return null;
     }
 }
 
-function resumeAudioContextOnClick() { /* ... (igual que antes, con removeEventListener) ... */
+
+function resumeAudioContextOnClick() {
     if (audioContext && audioContext.state === 'suspended') {
         audioContext.resume().then(() => console.log("AudioContext reanudado por click."))
                        .catch(e => console.error("Error reanudando AudioContext por click:", e));
     }
-    document.body.removeEventListener('click', resumeAudioContextOnClick);
-    document.body.removeEventListener('keydown', resumeAudioContextOnKey);
+    // No necesitamos remover los listeners si usamos { once: true }
 }
-function resumeAudioContextOnKey() { /* ... (igual que antes, con removeEventListener) ... */
+function resumeAudioContextOnKey() {
      if (audioContext && audioContext.state === 'suspended') {
         audioContext.resume().then(() => console.log("AudioContext reanudado por tecla."))
                        .catch(e => console.error("Error reanudando AudioContext por tecla:", e));
     }
-    document.body.removeEventListener('click', resumeAudioContextOnClick);
-    document.body.removeEventListener('keydown', resumeAudioContextOnKey);
+     // No necesitamos remover los listeners si usamos { once: true }
 }
+// Usar { once: true } para que se ejecuten solo la primera vez
 document.body.addEventListener('click', resumeAudioContextOnClick, { once: true });
 document.body.addEventListener('keydown', resumeAudioContextOnKey, { once: true });
 
 
 // --- Funciones de Ayuda para Colisiones y Obstáculos ---
 function checkRectCollision(rect1, rect2) {
+    // ... (sin cambios)
     return (
         rect1.x < rect2.x + rect2.width &&
         rect1.x + rect1.width > rect2.x &&
@@ -147,7 +180,8 @@ function checkRectCollision(rect1, rect2) {
 }
 
 function checkEntityFenceCollision(entity, nextX, nextY) {
-    const entityRadius = entity.radius;
+    // Considerar el radio de la entidad para la colisión
+    const entityRadius = entity.radius || 0; // Usar 0 si no tiene radio (p.ej. al spawnear missile)
     const entityRect = { // Bounding box futuro de la entidad
         x: nextX - entityRadius,
         y: nextY - entityRadius,
@@ -157,7 +191,14 @@ function checkEntityFenceCollision(entity, nextX, nextY) {
 
     for (const obstacle of obstacles) {
         if (obstacle.type === 'fence') {
-            if (checkRectCollision(entityRect, obstacle)) {
+            // Crear el rect del obstáculo valla
+            const fenceRect = {
+                x: obstacle.x,
+                y: obstacle.y,
+                width: obstacle.width,
+                height: obstacle.height
+            };
+            if (checkRectCollision(entityRect, fenceRect)) {
                 return true; // Colisión con valla
             }
         }
@@ -165,7 +206,9 @@ function checkEntityFenceCollision(entity, nextX, nextY) {
     return false; // Sin colisión con vallas
 }
 
+
 function isEntityInBush(entity) {
+    // ... (sin cambios)
     const entityPoint = { x: entity.x, y: entity.y, width: 1, height: 1 }; // Usar punto central
     for (const obstacle of obstacles) {
         if (obstacle.type === 'bush') {
@@ -178,6 +221,7 @@ function isEntityInBush(entity) {
 }
 
 function checkBulletFenceCollision(bullet) {
+    // ... (sin cambios)
     const bulletRadius = bullet.radius;
     // Bounding box actual de la bala
     const bulletRect = {
@@ -200,40 +244,34 @@ function checkBulletFenceCollision(bullet) {
 //PB
 // --- Función para cargar y mostrar el PB al inicio ---
 function loadAndDisplayPersonalBest() {
+    // ... (sin cambios)
     const savedPB = localStorage.getItem(LOCAL_STORAGE_PB_KEY);
-    // Si hay un PB guardado, lo mostramos. Si no, mostramos 0.
-    // Usamos parseInt y || 0 para manejar el caso de que no haya nada guardado (null)
     const currentPB = parseInt(savedPB, 10) || 0;
     personalBestElement.textContent = currentPB;
     console.log('PB cargado:', currentPB);
-    return currentPB; // Devolvemos el valor por si lo necesitas
+    return currentPB;
 }
 
 // --- Función para comprobar y guardar un nuevo PB ---
 function checkAndSavePersonalBest(currentScore) {
+    // ... (sin cambios)
     const savedPB = localStorage.getItem(LOCAL_STORAGE_PB_KEY);
-    const currentBestScore = parseInt(savedPB, 10) || 0; // Obtiene el PB actual o 0
+    const currentBestScore = parseInt(savedPB, 10) || 0;
 
     if (currentScore > currentBestScore) {
         console.log(`¡Nuevo PB! ${currentScore} > ${currentBestScore}. Guardando...`);
         localStorage.setItem(LOCAL_STORAGE_PB_KEY, currentScore);
-        // Actualizamos la pantalla inmediatamente
         personalBestElement.textContent = currentScore;
-        // Opcional: Actualizar PB en la pantalla de game over si lo añadiste
-        // const pbGameoverElement = document.getElementById('pb-gameover');
-        // if (pbGameoverElement) pbGameoverElement.textContent = currentScore;
-        return true; // Indicamos que se guardó un nuevo PB
+        return true;
     } else {
-        console.log(`Puntuación (${currentScore}) no superó el PB (${currentBestScore}).`);
-        // Opcional: Asegurarse de que el PB en game over muestra el correcto
-        // const pbGameoverElement = document.getElementById('pb-gameover');
-        // if (pbGameoverElement) pbGameoverElement.textContent = currentBestScore;
-        return false; // No se guardó nuevo PB
+        // console.log(`Puntuación (${currentScore}) no superó el PB (${currentBestScore}).`);
+        return false;
     }
 }
 
 // --- Clases del Juego ---
 class Player {
+    // ... (sin cambios en constructor y draw)
     constructor(x, y, radius, color, speed) {
         this.x = x; this.y = y; this.radius = radius; this.color = color; this.speed = speed; this.angle = 0;
     }
@@ -262,25 +300,22 @@ class Player {
         let targetX = this.x + deltaX;
         let targetY = this.y + deltaY;
 
+        // Usar checkEntityFenceCollision con el objeto player (this)
         // Comprobar colisión X
         if (checkEntityFenceCollision(this, targetX, this.y)) {
             targetX = this.x; // No mover en X si choca
         }
-
-        // Comprobar colisión Y
-        if (checkEntityFenceCollision(this, targetX, targetY)) { // Usar targetX (que pudo ser ajustado)
+        // Comprobar colisión Y usando la X ya validada
+        if (checkEntityFenceCollision(this, targetX, targetY)) {
             targetY = this.y; // No mover en Y si choca
         }
-
-        // Comprobar de nuevo la X por si el ajuste de Y causó colisión en X
+        // Re-comprobar X por si el ajuste de Y causó colisión en X (diagonal contra esquina)
         if (targetX !== this.x && checkEntityFenceCollision(this, targetX, targetY)) {
              targetX = this.x;
         }
 
-
         this.x = targetX;
         this.y = targetY;
-
 
         // Mantener dentro del canvas (después de colisiones con vallas)
         this.x = Math.max(this.radius, Math.min(canvas.width - this.radius, this.x));
@@ -291,6 +326,7 @@ class Player {
 }
 
 class Bullet {
+    // ... (sin cambios)
     constructor(x, y, radius, color, velocity) {
         this.x = x; this.y = y; this.radius = radius; this.color = color; this.velocity = velocity;
     }
@@ -303,72 +339,55 @@ class Bullet {
 }
 
 class Zombie {
+    // ... (sin cambios en constructor, draw, stopSound)
     constructor(x, y, radius, color, speed) {
         this.x = x; this.y = y; this.radius = radius; this.color = color; this.speed = speed;
         this.audioSource = null; this.gainNode = null;
-
-        // --- NUEVAS PROPIEDADES PARA MOVIMIENTO IMPREDECIBLE ---
-        this.targetAngle = 0; // El ángulo hacia el que intenta moverse actualmente
-        // Intervalo de actualización de ángulo variable (entre 300ms y 500ms)
+        this.targetAngle = 0;
         this.angleUpdateInterval = 300 + Math.random() * 200;
-        this.lastAngleUpdateTime = 0; // Momento de la última actualización
-        // Máxima desviación angular (ej: +/- 15 grados)
+        this.lastAngleUpdateTime = 0;
         this.maxAngleDeviation = Math.PI / 12;
-        this.moveChance = 0.98; // 98% de probabilidad de moverse cada frame (2% pausa)
-        // --- FIN NUEVAS PROPIEDADES ---
+        this.moveChance = 0.98;
     }
 
     draw() {
         const inBush = isEntityInBush(this);
-        const originalAlpha = ctx.globalAlpha; // Guardar opacidad actual
-
-        ctx.globalAlpha = inBush ? BUSH_ALPHA : 1.0; // Ajustar opacidad
-
+        const originalAlpha = ctx.globalAlpha;
+        ctx.globalAlpha = inBush ? BUSH_ALPHA : 1.0;
         ctx.fillStyle = this.color;
         ctx.beginPath();
         ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
         ctx.fill();
-
-        ctx.globalAlpha = originalAlpha; // Restaurar opacidad
+        ctx.globalAlpha = originalAlpha;
     }
 
-    update(target, timestamp) { // <<<--- AÑADIR timestamp como parámetro
-        // --- NUEVO: Pausa aleatoria ---
+    update(target, timestamp) {
         if (Math.random() > this.moveChance) {
-            this.draw(); // Asegurarse de dibujarlo aunque no se mueva
-            // No actualizamos audio si está pausado, para evitar saltos de volumen
-            return; // Salir temprano, no mover este frame
+            this.draw();
+            return;
         }
-        // --- FIN Pausa aleatoria ---
 
-        // --- NUEVO: Actualización periódica del ángulo objetivo con desviación ---
         if (timestamp - this.lastAngleUpdateTime > this.angleUpdateInterval) {
-            // Calcular ángulo directo al jugador
             const directAngle = Math.atan2(target.y - this.y, target.x - this.x);
-            // Calcular desviación aleatoria
             const randomOffset = (Math.random() * 2 - 1) * this.maxAngleDeviation;
-            // Establecer nuevo ángulo objetivo (directo + desviación)
             this.targetAngle = directAngle + randomOffset;
-            // Registrar tiempo de actualización
             this.lastAngleUpdateTime = timestamp;
         }
-        // --- FIN Actualización periódica ---
 
-        // Calcular movimiento basado en el ángulo objetivo *actual* (que puede ser antiguo)
         const deltaX = Math.cos(this.targetAngle) * this.speed;
         const deltaY = Math.sin(this.targetAngle) * this.speed;
 
-        // Lógica de colisión con vallas (igual que antes)
         let targetX = this.x + deltaX;
         let targetY = this.y + deltaY;
+
+        // Usar checkEntityFenceCollision con el objeto zombie (this)
         if (checkEntityFenceCollision(this, targetX, this.y)) targetX = this.x;
         if (checkEntityFenceCollision(this, targetX, targetY)) targetY = this.y;
-        if (targetX !== this.x && checkEntityFenceCollision(this, targetX, targetY)) targetX = this.x; // Re-check X
+        if (targetX !== this.x && checkEntityFenceCollision(this, targetX, targetY)) targetX = this.x;
 
         this.x = targetX;
         this.y = targetY;
 
-        // Actualizar volumen del sonido (igual que antes)
         if (this.gainNode && audioContext && audioContext.state === 'running') {
             const dist = Math.hypot(target.x - this.x, target.y - this.y);
             let volume = 0;
@@ -380,7 +399,7 @@ class Zombie {
             catch (e) { this.gainNode.gain.setValueAtTime(volume, audioContext.currentTime); }
         }
 
-        this.draw(); // Dibujar al final
+        this.draw();
     }
 
     stopSound() {
@@ -388,8 +407,7 @@ class Zombie {
             try {
                  this.audioSource.stop(); this.audioSource.disconnect();
                  if (this.gainNode) this.gainNode.disconnect();
-                 // console.log("Sonido de zombie detenido."); // Log opcional
-             } catch(e) {/* Ignorar errores si ya detenido */}
+             } catch(e) {/* Ignorar */}
              this.audioSource = null; this.gainNode = null;
         }
     }
@@ -397,42 +415,105 @@ class Zombie {
 
 // --- Funciones del Juego ---
 function drawObstacles() {
+    // ... (sin cambios)
     obstacles.forEach(obstacle => {
         ctx.fillStyle = obstacle.color;
-        ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+        // Dibujar arbustos primero para que estén detrás de las vallas si se solapan
+        if (obstacle.type === 'bush') {
+            ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+        }
+    });
+    obstacles.forEach(obstacle => {
+        // Dibujar vallas después
+        if (obstacle.type === 'fence') {
+            ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+        }
     });
 }
 
 function createObstacles() {
     obstacles = []; // Limpiar
 
-    // Vallas (Ajusta posiciones/tamaños como quieras)
+    // Vallas
     obstacles.push({ type: 'fence', x: 100, y: 150, width: 150, height: 20, color: FENCE_COLOR });
     obstacles.push({ type: 'fence', x: canvasWidth - 250, y: canvasHeight - 170, width: 150, height: 20, color: FENCE_COLOR });
     obstacles.push({ type: 'fence', x: canvasWidth / 2 - 10, y: 50, width: 20, height: 100, color: FENCE_COLOR });
     obstacles.push({ type: 'fence', x: canvasWidth / 2 - 10, y: canvasHeight - 150, width: 20, height: 100, color: FENCE_COLOR });
-    obstacles.push({ type: 'fence', x: 200, y: canvasHeight / 2 - 10, width: 100, height: 20, color: FENCE_COLOR }); // Valla central H
+    obstacles.push({ type: 'fence', x: 200, y: canvasHeight / 2 - 10, width: 100, height: 20, color: FENCE_COLOR });
 
-
-    // Arbustos (Ajusta posiciones/tamaños como quieras)
+    // Arbustos
     obstacles.push({ type: 'bush', x: 200, y: canvasHeight - 100, width: 100, height: 80, color: BUSH_COLOR });
     obstacles.push({ type: 'bush', x: canvasWidth - 300, y: 80, width: 120, height: 60, color: BUSH_COLOR });
     obstacles.push({ type: 'bush', x: 50, y: canvasHeight / 2 - 40, width: 80, height: 80, color: BUSH_COLOR });
     obstacles.push({ type: 'bush', x: canvasWidth - 150, y: canvasHeight / 2 - 50, width: 100, height: 100, color: BUSH_COLOR });
 
-
     console.log("Obstáculos creados:", obstacles.length);
+}
+
+// --- NUEVO: Función para dibujar el misil ---
+function drawMissile() {
+    if (!missileItem.active) return; // No dibujar si no está activo
+
+    ctx.fillStyle = missileItem.color;
+    ctx.strokeStyle = 'black'; // Borde para destacar
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(missileItem.x, missileItem.y, missileItem.radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.lineWidth = 1; // Resetear grosor línea
+}
+
+// --- NUEVO: Función para intentar spawnear el misil ---
+function trySpawnMissile(timestamp) {
+    // Solo intentar si no hay un misil activo y ha pasado el tiempo
+    if (!missileItem.active && (timestamp - missileItem.lastSpawnTime > missileItem.spawnInterval)) {
+        let validSpawn = false;
+        let attempts = 0;
+        let spawnX, spawnY;
+
+        while (!validSpawn && attempts < 50) { // Intentar hasta 50 veces
+            attempts++;
+            // Generar posición aleatoria dentro del canvas, con un margen
+            spawnX = missileItem.radius + Math.random() * (canvasWidth - missileItem.radius * 2);
+            spawnY = missileItem.radius + Math.random() * (canvasHeight - missileItem.radius * 2);
+
+            // Comprobar que no spawnee DENTRO de una valla
+            // Creamos un objeto temporal para la comprobación
+            const tempMissile = { x: spawnX, y: spawnY, radius: missileItem.radius };
+            if (!checkEntityFenceCollision(tempMissile, spawnX, spawnY)) {
+                validSpawn = true;
+            }
+        }
+
+        if (validSpawn) {
+            missileItem.x = spawnX;
+            missileItem.y = spawnY;
+            missileItem.active = true;
+            missileItem.lastSpawnTime = timestamp; // Resetear timer *solo* al spawnear
+            console.log(`Misil spawneado en ${spawnX.toFixed(0)}, ${spawnY.toFixed(0)}`);
+        } else {
+            console.warn("No se pudo encontrar posición válida para el misil tras varios intentos.");
+            // Resetear timer igualmente para no intentar spawnear en cada frame
+            missileItem.lastSpawnTime = timestamp;
+        }
+    }
 }
 
 
 function init() {
     console.log("--- Iniciando Juego ---");
-    // Asegurar que initAudio se llama si audioContext no existe
-    if (!audioContext) initAudio(); // <--- Comprobación clave
+    if (!audioContext) {
+        console.warn("AudioContext no inicializado, intentando de nuevo.");
+        initAudio(); // Asegurar que se intenta inicializar audio
+    } else if (audioContext.state === 'suspended') {
+        // Si ya existe pero está suspendido (p.ej. tras game over), reanudarlo
+        audioContext.resume().then(() => console.log("AudioContext reanudado en init."));
+    }
 
     createObstacles(); // Crear obstáculos
 
-    // Asegurar que el jugador no spawnee dentro de una valla
+    // Posición inicial jugador (validada)
     let validPlayerPos = false;
     let playerX = canvasWidth / 2;
     let playerY = canvasHeight / 2;
@@ -442,20 +523,20 @@ function init() {
         if (!checkEntityFenceCollision(tempPlayer, playerX, playerY)) {
             validPlayerPos = true;
         } else {
-            console.warn("Posición inicial jugador choca! Ajustando...");
-            playerX += 25; // Mover un poco e intentar de nuevo
-            playerY += 10;
+            playerX += 25 * (Math.random() < 0.5 ? 1 : -1); // Mover aleatoriamente
+            playerY += 10 * (Math.random() < 0.5 ? 1 : -1);
+             // Mantener dentro de límites aproximados para no irse muy lejos
+            playerX = Math.max(15, Math.min(canvasWidth - 15, playerX));
+            playerY = Math.max(15, Math.min(canvasHeight - 15, playerY));
             attempts++;
         }
     }
      if (!validPlayerPos) {
-         console.error("NO SE PUDO COLOCAR AL JUGADOR FUERA DE VALLAS!");
-         // Podrías ponerlo en 0,0 o dejarlo donde estaba
+         console.error("NO SE PUDO COLOCAR AL JUGADOR FUERA DE VALLAS! Usando centro.");
          playerX = canvasWidth / 2; playerY = canvasHeight / 2;
      }
 
     player = new Player(playerX, playerY, 15, 'blue', 3);
-
     bullets = [];
     if (zombies && zombies.length > 0) {
         zombies.forEach(zombie => zombie.stopSound());
@@ -466,23 +547,27 @@ function init() {
     gameRunning = true;
     isPaused = false;
     lastZombieSpawnTime = performance.now();
-    zombieSpawnInterval = 1500;
+    zombieSpawnInterval = 1500; // Resetear dificultad spawn
     scoreElement.textContent = score;
     gameOverElement.style.display = 'none';
     pausedElement.style.display = 'none';
 
-    // Carga y muestra el PB existente al iniciar CADA juego (o una vez al cargar página)
+    // Resetear estado del misil
+    missileItem.active = false;
+    missileItem.lastSpawnTime = performance.now(); // Iniciar timer para el primer misil
+
     loadAndDisplayPersonalBest();
 
     keysPressed = {};
     if (animationId) cancelAnimationFrame(animationId);
-    animationId = null; // Resetear
+    animationId = null;
     console.log("Iniciando nuevo gameLoop...");
     animationId = requestAnimationFrame(gameLoop);
     console.log("--- Inicialización Completa ---");
 }
 
 function spawnZombie() {
+    // ... (lógica de spawn de zombie sin cambios, solo se asegura de no spawnear en valla)
     const radius = Math.random() * 10 + 10;
     const speed = Math.random() * 1 + 0.5;
     const color = 'green';
@@ -492,191 +577,291 @@ function spawnZombie() {
 
     while (!validSpawn && attempts < 50) {
         attempts++;
-        if (Math.random() < 0.5) { /* ... spawn horizontal ... */
-            x = Math.random() * canvas.width; y = Math.random() < 0.5 ? 0 - radius : canvas.height + radius;
-        } else { /* ... spawn vertical ... */
-            x = Math.random() < 0.5 ? 0 - radius : canvas.width + radius; y = Math.random() * canvas.height;
+        const spawnEdge = Math.random();
+        if (spawnEdge < 0.25) { // Arriba
+            x = Math.random() * canvas.width; y = 0 - radius;
+        } else if (spawnEdge < 0.5) { // Abajo
+            x = Math.random() * canvas.width; y = canvas.height + radius;
+        } else if (spawnEdge < 0.75) { // Izquierda
+            x = 0 - radius; y = Math.random() * canvas.height;
+        } else { // Derecha
+            x = canvas.width + radius; y = Math.random() * canvas.height;
         }
 
+        // Comprobar si la posición inicial está dentro de una valla
         const tempZombie = { x: x, y: y, radius: radius };
         if (!checkEntityFenceCollision(tempZombie, x, y)) {
             validSpawn = true;
         }
     }
 
+
     if (validSpawn) {
         const newZombie = new Zombie(x, y, radius, color, speed);
         zombies.push(newZombie);
 
-        // Iniciar sonido DESPUÉS de crear y validar el zombie
         if (zombieBuffer && audioContext && audioContext.state === 'running') {
-            const audioNodes = playSoundInternal(zombieBuffer, 0, true);
+            const audioNodes = playSoundInternal(zombieBuffer, 0, true); // Iniciar con volumen 0
             if (audioNodes) {
                 newZombie.audioSource = audioNodes.source;
                 newZombie.gainNode = audioNodes.gainNode;
+                // La lógica de update ajustará el volumen basado en la distancia
             }
         }
     } else {
-        console.warn("No se pudo spawnear zombie fuera de vallas.");
+        // console.warn("No se pudo spawnear zombie fuera de vallas tras varios intentos.");
     }
 }
+
 
 function handleCollisions() {
     // Bala - Zombie
     for (let i = bullets.length - 1; i >= 0; i--) {
         const bullet = bullets[i];
-        if (!bullet) continue;
+        if (!bullet) continue; // Seguridad extra
+
+        // Optimización: Comprobar si la bala está fuera de pantalla o chocó con valla
+        if (checkBulletFenceCollision(bullet) ||
+            bullet.x + bullet.radius < 0 || bullet.x - bullet.radius > canvas.width ||
+            bullet.y + bullet.radius < 0 || bullet.y - bullet.radius > canvas.height)
+        {
+            bullets.splice(i, 1);
+            continue; // Ir a la siguiente bala
+        }
+
+
         for (let j = zombies.length - 1; j >= 0; j--) {
             const zombie = zombies[j];
+             if (!zombie) continue; // Seguridad extra
+
             const dist = Math.hypot(bullet.x - zombie.x, bullet.y - zombie.y);
             if (dist - zombie.radius - bullet.radius < 1) {
-                zombie.stopSound();
-                score += 10; scoreElement.textContent = score;
-                bullets.splice(i, 1); zombies.splice(j, 1);
-                zombieSpawnInterval = Math.max(300, zombieSpawnInterval * 0.99);
-                break; // Salir bucle interno (j)
+                zombie.stopSound(); // Detener sonido del zombie específico
+                score += 10;
+                scoreElement.textContent = score;
+                // Reducir intervalo de spawn ligeramente
+                zombieSpawnInterval = Math.max(250, zombieSpawnInterval * 0.995); // Mínimo 250ms
+
+                // Eliminar bala y zombie
+                bullets.splice(i, 1);
+                zombies.splice(j, 1);
+
+                // Importante: Si la bala impactó, ya no puede impactar a otro zombie
+                // Salir del bucle interno (j) e ir a la siguiente bala (o terminar si no hay más)
+                break;
             }
         }
     }
 
     // Jugador - Zombie
-    if (!gameRunning) return; // No comprobar si ya terminó por colisión bala-zombie(?) No debería pasar
+    if (!gameRunning) return; // No comprobar si ya terminó
     for (let j = zombies.length - 1; j >= 0; j--) {
         const zombie = zombies[j];
-        if (!zombie) continue; // Por si acaso fue eliminado justo antes
+        if (!zombie) continue;
         const dist = Math.hypot(player.x - zombie.x, player.y - zombie.y);
         if (dist - zombie.radius - player.radius < 1) {
-            gameOver();
-            return; // Salir de handleCollisions
+            gameOver(); // Llama a la función que maneja el fin del juego
+            return; // Salir de handleCollisions inmediatamente
+        }
+    }
+
+    // --- NUEVO: Jugador - Misil ---
+    if (missileItem.active) {
+        const distPlayerMissile = Math.hypot(player.x - missileItem.x, player.y - missileItem.y);
+        if (distPlayerMissile < player.radius + missileItem.radius) {
+            console.log("Misil recogido!");
+            missileItem.active = false; // Desactivar misil
+
+            // Reproducir sonido de recogida
+            playSound(missilePickupSoundBuffer, 0.8); // <<<--- SONIDO RECOGIDA
+
+            // Añadir puntos por recoger el misil (opcional)
+            score += 100;
+            scoreElement.textContent = score;
+
+            // Detener sonido y eliminar TODOS los zombies
+            zombies.forEach(zombie => zombie.stopSound());
+            zombies = []; // Vaciar el array de zombies
+
+            console.log("Todos los zombies eliminados!");
         }
     }
 }
 
+
 function gameOver() {
-    if (!gameRunning) return;
+    if (!gameRunning) return; // Evitar llamadas múltiples
     console.log("Game Over - Puntuación Final:", score);
-    gameRunning = false;
+    gameRunning = false; // Detener el bucle principal
+
+    // <<<--- REPRODUCIR SONIDO DE MUERTE ---
+    playSound(deathSoundBuffer, 0.7); // Ajusta el volumen como necesites
+
     finalScoreElement.textContent = score;
-    // 2. Comprueba y guarda el PB *ANTES* de mostrar la pantalla
-    checkAndSavePersonalBest(score);
-    gameOverElement.style.display = 'flex';
+    checkAndSavePersonalBest(score); // Comprobar y guardar PB
+    gameOverElement.style.display = 'flex'; // Mostrar pantalla game over
+
+    // Detener todos los sonidos de zombies restantes (aunque no debería haber si la colisión fue correcta)
     zombies.forEach(zombie => zombie.stopSound());
-    if (animationId) cancelAnimationFrame(animationId);
-    animationId = null;
+    // Detener el bucle de animación
+    if (animationId) {
+        cancelAnimationFrame(animationId);
+        animationId = null;
+    }
+
+    // Suspender el AudioContext para liberar recursos y evitar sonidos residuales
     if (audioContext && audioContext.state === 'running') {
         audioContext.suspend().then(() => console.log("AudioContext suspendido en Game Over."));
     }
 }
 
 function togglePause() {
-    if (!gameRunning) return;
+    // ... (sin cambios)
+    if (!gameRunning && !isPaused) return; // No pausar si ya es game over
+
     isPaused = !isPaused;
     console.log(`Juego ${isPaused ? 'PAUSADO' : 'REANUDADO'}`);
     pausedElement.style.display = isPaused ? 'flex' : 'none';
 
     if (audioContext) {
-        if (isPaused && audioContext.state === 'running') audioContext.suspend();
-        else if (!isPaused && audioContext.state === 'suspended') audioContext.resume();
+        if (isPaused && audioContext.state === 'running') {
+             audioContext.suspend().then(() => console.log("AudioContext suspendido por pausa."));
+        } else if (!isPaused && audioContext.state === 'suspended') {
+             audioContext.resume().then(() => console.log("AudioContext reanudado tras pausa."));
+        }
     }
 
-    if (!isPaused) {
-        lastZombieSpawnTime = performance.now();
-        if (animationId) cancelAnimationFrame(animationId); // Cancelar por si acaso
-        animationId = requestAnimationFrame(gameLoop); // Reiniciar bucle
+    if (!isPaused && gameRunning) { // Solo reanudar loop si el juego estaba corriendo
+        lastZombieSpawnTime = performance.now(); // Reajustar timer spawn zombie
+        // Reajustar timer spawn misil para que no spawnee inmediatamente después de despausar
+        missileItem.lastSpawnTime = performance.now();
+        if (!animationId) { // Solo iniciar si no está ya corriendo (seguridad)
+            animationId = requestAnimationFrame(gameLoop);
+        }
     } else {
-        if (animationId) cancelAnimationFrame(animationId); // Detener bucle al pausar
-        animationId = null;
+        // Si se pausa o si el juego ya terminó, detener el bucle
+        if (animationId) {
+            cancelAnimationFrame(animationId);
+            animationId = null;
+        }
     }
 }
 
 // --- Bucle Principal del Juego ---
 function gameLoop(timestamp) {
-    if (!gameRunning || isPaused) {
-        // Si está pausado, solicitar el frame para poder despausar.
-        // Si es game over, no solicitar más frames.
-        if (isPaused) animationId = requestAnimationFrame(gameLoop);
+    // Si está pausado o terminó el juego, no hacer nada más que solicitar el siguiente frame si está pausado
+    if (isPaused) {
+        animationId = requestAnimationFrame(gameLoop); // Necesario para detectar despausa
         return;
     }
-
-    // Limpiar
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Dibujar Fondo/Obstáculos
-    drawObstacles();
-
-    // Actualizar/Dibujar Entidades
-    player.update();
-    zombies.forEach(zombie => zombie.update(player, timestamp));
-
-    // Actualizar Balas y Comprobar Colisiones / Fuera de Pantalla
-    for (let i = bullets.length - 1; i >= 0; i--) {
-        const bullet = bullets[i];
-        bullet.update(); // Mueve y dibuja la bala
-
-        // Comprobar colisión con vallas O si está fuera de pantalla
-        if (checkBulletFenceCollision(bullet) || // <<<--- NUEVA COMPROBACIÓN
-            bullet.x + bullet.radius < 0 ||
-            bullet.x - bullet.radius > canvas.width ||
-            bullet.y + bullet.radius < 0 ||
-            bullet.y - bullet.radius > canvas.height)
-        {
-            // Eliminar la bala inmediatamente
-            bullets.splice(i, 1);
-        }
+     // Si el juego terminó (gameRunning es false), no solicitar más frames
+    if (!gameRunning) {
+         if (animationId) cancelAnimationFrame(animationId); // Asegurar cancelación
+         animationId = null;
+         return;
     }
 
+    // Limpiar Canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Spawner
+    // Dibujar Obstáculos (fondo)
+    drawObstacles();
+
+    // --- NUEVO: Spawner de Misil ---
+    trySpawnMissile(timestamp);
+
+    // --- NUEVO: Dibujar Misil (si está activo) ---
+    drawMissile();
+
+    // Actualizar/Dibujar Jugador
+    player.update();
+
+    // Actualizar/Dibujar Zombies
+    zombies.forEach(zombie => zombie.update(player, timestamp));
+
+    // Actualizar/Dibujar Balas (la colisión bala-zombie/valla se maneja en handleCollisions)
+    // No es necesario iterar aquí si handleCollisions lo hace
+    bullets.forEach(bullet => bullet.draw()); // Solo dibujar, la lógica de update/eliminación está en handleCollisions
+
+    // Spawner Zombies
     if (timestamp - lastZombieSpawnTime > zombieSpawnInterval) {
         spawnZombie();
         lastZombieSpawnTime = timestamp;
     }
 
-    // Colisiones
-    handleCollisions(); // Puede cambiar gameRunning a false
+    // Manejar Colisiones (Bala-Zombie, Jugador-Zombie, Jugador-Misil, Bala-Valla)
+    handleCollisions(); // Esta función ahora maneja más cosas y puede llamar a gameOver
 
-    // Siguiente Frame (solo si el juego no ha terminado)
+    // Solicitar Siguiente Frame (solo si gameRunning sigue true después de handleCollisions)
     if (gameRunning) {
         animationId = requestAnimationFrame(gameLoop);
     } else {
-        // Asegurar que se cancela si handleCollisions causó gameOver
-        if (animationId) cancelAnimationFrame(animationId);
+        // Si handleCollisions llamó a gameOver, gameRunning será false y no se solicitará otro frame
+        if (animationId) cancelAnimationFrame(animationId); // Asegurar cancelación
         animationId = null;
+         console.log("Fin del bucle de juego debido a gameRunning=false.");
     }
 }
 
 
 // --- Event Listeners ---
 window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { togglePause(); return; }
-    if (gameRunning && !isPaused) keysPressed[e.key] = true;
-    resumeAudioContextOnKey(); // Llama a la función que se auto-elimina
+    if (e.key === 'Escape') {
+        togglePause();
+        return; // Evitar que se registre la tecla Esc para movimiento
+    }
+    // Solo registrar teclas si el juego está activo y no pausado
+    if (gameRunning && !isPaused) {
+        keysPressed[e.key] = true;
+    }
+    // Llamar a la función de reanudación de audio (se auto-elimina)
+    resumeAudioContextOnKey();
 });
 
 window.addEventListener('keyup', (e) => {
+    // Siempre registrar keyup para evitar teclas "pegadas" si se sueltan durante pausa/gameover
     keysPressed[e.key] = false;
 });
 
 canvas.addEventListener('click', (event) => {
-    resumeAudioContextOnClick(); // Llama a la función que se auto-elimina
+    // Llamar a la función de reanudación de audio (se auto-elimina)
+    resumeAudioContextOnClick();
+
+    // Solo disparar si el juego está activo y no pausado
     if (!gameRunning || isPaused) return;
-    playSound(shootBuffer, 0.4); // Usa la función segura
+
+    playSound(shootBuffer, 0.4); // Reproducir sonido de disparo
+
     const angle = Math.atan2(mousePos.y - player.y, mousePos.x - player.x);
     const bulletSpeed = 5;
     const velocity = { x: Math.cos(angle) * bulletSpeed, y: Math.sin(angle) * bulletSpeed };
-    bullets.push(new Bullet(player.x, player.y, 5, 'yellow', velocity));
+    // Asegurar que la bala sale del 'cañón' y no del centro exacto
+    const barrelLength = player.radius; // Nace justo en el borde del jugador
+    const startX = player.x + barrelLength * Math.cos(angle);
+    const startY = player.y + barrelLength * Math.sin(angle);
+
+    bullets.push(new Bullet(startX, startY, 5, 'yellow', velocity));
 });
 
 canvas.addEventListener('mousemove', (event) => {
+    // Actualizar posición del ratón siempre, incluso si está pausado (para la mira)
     const rect = canvas.getBoundingClientRect();
     mousePos = { x: event.clientX - rect.left, y: event.clientY - rect.top };
 });
 
 restartButton.addEventListener('click', () => {
     console.log("Botón Reiniciar presionado.");
-    init();
+    // Detener cualquier sonido zombie residual por si acaso
+    zombies.forEach(z => z.stopSound());
+    zombies = []; // Limpiar array por si acaso
+    gameOverElement.style.display = 'none'; // Ocultar pantalla game over
+    init(); // Reiniciar el juego
 });
 
 // --- Iniciar el juego ---
 console.log("Iniciando la aplicación...");
-init(); // Llamar a init al cargar la página
+// Es importante llamar a initAudio() ANTES de init() para que los sonidos
+// puedan empezar a cargarse mientras se inicializa el resto del juego.
+// initAudio() ahora llama a loadSounds() internamente.
+initAudio(); // <--- Llamar aquí para iniciar carga de sonidos
+init(); // Llamar a init para configurar el estado inicial del juego
